@@ -1,0 +1,22 @@
+{
+  "ViDoRe_arxivqa": {},
+  "ViDoRe_docvqa": {},
+  "ViDoRe_infovqa": {},
+  "ViDoRe_tabfquad": {},
+  "ViDoRe_tatdqa": {},
+  "ViDoRe_shiftproject": {},
+  "ViDoRe_syntheticDocQA_artificial_intelligence": {},
+  "ViDoRe_syntheticDocQA_energy": {},
+  "ViDoRe_syntheticDocQA_government_reports": {},
+  "ViDoRe_syntheticDocQA_healthcare_industry": {},
+  "VisRAG_ArxivQA": {},
+  "VisRAG_ChartQA": {},
+  "VisRAG_MP-DocVQA": {},
+  "VisRAG_SlideVQA": {},
+  "VisRAG_InfoVQA": {},
+  "VisRAG_PlotQA": {},
+  "ViDoSeek-page": {},
+  "ViDoSeek-doc": {},
+  "MMLongBench-doc": {},
+  "MMLongBench-page": {}
+}

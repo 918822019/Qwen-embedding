@@ -1,5 +1,4 @@
 accelerate
-datasets
 decord
 einops
 flash-attn  # check out orginal repo README for accelerating installation: https://github.com/Dao-AILab/flash-attention
