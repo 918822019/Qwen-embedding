@@ -94,7 +94,8 @@ class APIConfig:
     max_retries: int = 3
     retry_delay: float = 1.0
     batch_size: int = 1  # Ark API processes one input at a time
-    num_workers: int = 4
+    num_workers: int = 32  # Number of concurrent workers for parallel requests
+    rate_limit_qps: float = 400.0  # Rate limit: queries per second
 
 
 @dataclass
@@ -123,6 +124,7 @@ class EmbeddingAPIClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {config.api_key}"
         })
+        self._debug_first_response = True  # Print first response for debugging
 
     def _image_to_base64_url(self, image: Image.Image) -> str:
         """Convert PIL Image to base64 data URL"""
@@ -198,6 +200,7 @@ class EmbeddingAPIClient:
         }
 
         # Make request with retries
+        last_error = None
         for attempt in range(self.config.max_retries):
             try:
                 response = self.session.post(
@@ -208,23 +211,49 @@ class EmbeddingAPIClient:
                 response.raise_for_status()
                 result = response.json()
 
+                # Debug: print first response to understand API format
+                if self._debug_first_response:
+                    logger.info(f"[DEBUG] First API response structure: {json.dumps(result, indent=2, ensure_ascii=False)[:1000]}")
+                    self._debug_first_response = False
+
                 # Parse Ark API response format
-                # Response: {"data": [{"embedding": [0.1, 0.2, ...]}]}
-                embedding = np.array(result["data"][0]["embedding"], dtype=np.float32)
+                # Expected: {"data": [{"embedding": [0.1, 0.2, ...]}]}
+                # But could also be: {"data": [{"embedding": [0.1, 0.2, ...], "index": 0}]}
+                if "data" not in result:
+                    raise KeyError(f"Response missing 'data' field. Response: {result}")
+
+                data = result["data"]
+                if not data:
+                    raise ValueError(f"Response 'data' is empty. Response: {result}")
+
+                # Handle different response formats
+                if isinstance(data, list) and len(data) > 0:
+                    first_item = data[0]
+                    if isinstance(first_item, dict) and "embedding" in first_item:
+                        embedding = np.array(first_item["embedding"], dtype=np.float32)
+                    else:
+                        raise KeyError(f"Unexpected data format. First item: {first_item}")
+                elif isinstance(data, dict) and "embedding" in data:
+                    embedding = np.array(data["embedding"], dtype=np.float32)
+                else:
+                    raise KeyError(f"Cannot parse embedding from response. Data: {data}")
+
                 return embedding
 
             except requests.exceptions.RequestException as e:
+                last_error = e
                 logger.warning(f"API request failed (attempt {attempt + 1}/{self.config.max_retries}): {e}")
                 if attempt < self.config.max_retries - 1:
                     time.sleep(self.config.retry_delay * (attempt + 1))
-                else:
-                    raise RuntimeError(f"API request failed after {self.config.max_retries} attempts: {e}")
-            except (KeyError, IndexError) as e:
+            except (KeyError, ValueError, IndexError) as e:
                 logger.error(f"Failed to parse API response: {e}")
-                logger.error(f"Response: {response.text if 'response' in dir() else 'N/A'}")
+                try:
+                    logger.error(f"Full response: {response.text[:500]}")
+                except:
+                    pass
                 raise
 
-        return None
+        raise RuntimeError(f"API request failed after {self.config.max_retries} attempts: {last_error}")
 
     def get_embeddings(
         self,
@@ -253,6 +282,74 @@ class EmbeddingAPIClient:
         for text, image_path in zip(texts, image_paths):
             emb = self.get_embedding_single(text, image_path, resolution)
             embeddings.append(emb)
+
+        return np.stack(embeddings)
+
+    def get_embeddings_parallel(
+        self,
+        texts: List[str],
+        image_paths: List[Optional[str]] = None,
+        resolution: Tuple[int, int] = None,
+        num_workers: int = 8,
+        rate_limit_qps: float = 50.0,
+        desc: str = "Embedding"
+    ) -> np.ndarray:
+        """
+        Get embeddings for multiple inputs using parallel requests
+
+        Args:
+            texts: List of text inputs
+            image_paths: List of image paths (None for text-only)
+            resolution: Optional image resolution for resizing
+            num_workers: Number of concurrent workers
+            rate_limit_qps: Max queries per second (rate limiting)
+            desc: Description for progress bar
+
+        Returns:
+            numpy array of embeddings [batch_size, embedding_dim]
+        """
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        if image_paths is None:
+            image_paths = [None] * len(texts)
+
+        n = len(texts)
+        embeddings = [None] * n  # Pre-allocate to maintain order
+
+        # Rate limiting with token bucket
+        min_interval = 1.0 / rate_limit_qps if rate_limit_qps > 0 else 0
+        last_request_time = [0.0]
+        rate_lock = threading.Lock()
+
+        def process_single(idx: int) -> Tuple[int, np.ndarray]:
+            # Rate limiting
+            with rate_lock:
+                now = time.time()
+                elapsed = now - last_request_time[0]
+                if elapsed < min_interval:
+                    time.sleep(min_interval - elapsed)
+                last_request_time[0] = time.time()
+
+            emb = self.get_embedding_single(texts[idx], image_paths[idx], resolution)
+            return idx, emb
+
+        # Use ThreadPoolExecutor for parallel requests with progress bar
+        completed = 0
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(process_single, i): i for i in range(n)}
+
+            with tqdm(total=n, desc=desc) as pbar:
+                for future in as_completed(futures):
+                    try:
+                        idx, emb = future.result()
+                        embeddings[idx] = emb
+                        completed += 1
+                        pbar.update(1)
+                    except Exception as e:
+                        idx = futures[future]
+                        logger.error(f"Failed to get embedding for item {idx}: {e}")
+                        raise
 
         return np.stack(embeddings)
 
@@ -296,10 +393,20 @@ class SimpleDatasetLoader:
 
     @staticmethod
     def load_image_cls_dataset(dataset_name: str, image_root: str):
-        """Load image classification dataset"""
+        """Load image classification dataset from local cache"""
         try:
             from datasets import load_dataset
-            dataset = load_dataset("ziyjiang/MMEB_Test_Instruct", dataset_name, split="test")
+            import os
+
+            # Use local cache, don't re-download
+            # Set HF_DATASETS_OFFLINE=1 to force offline mode
+            dataset = load_dataset(
+                "ziyjiang/MMEB_Test_Instruct",
+                dataset_name,
+                split="test",
+                trust_remote_code=True,
+                # Use cache, won't download if already cached
+            )
 
             queries = []
             candidates = []
@@ -338,7 +445,7 @@ class SimpleDatasetLoader:
 
     @staticmethod
     def load_generic_dataset(task_config: dict, data_basedir: str = None):
-        """Load dataset based on task config"""
+        """Load dataset based on task config. Prioritize original loaders for consistency."""
         dataset_parser = task_config.get("dataset_parser", "")
         dataset_name = task_config.get("dataset_name", "")
 
@@ -347,27 +454,135 @@ class SimpleDatasetLoader:
         if data_basedir and image_root:
             image_root = os.path.join(data_basedir, image_root)
 
+        # First, try to use the original VLM2Vec data loaders for consistency
+        try:
+            return SimpleDatasetLoader._load_from_original(task_config.copy(), data_basedir)
+        except ImportError as e:
+            logger.warning(f"Original loader failed due to missing dependency: {e}")
+            logger.warning(f"Falling back to simplified loader for {dataset_parser}")
+        except Exception as e:
+            logger.warning(f"Original loader failed: {e}")
+            logger.warning(f"Falling back to simplified loader for {dataset_parser}")
+
+        # Fallback to simplified loaders
         if dataset_parser == "image_cls":
             return SimpleDatasetLoader.load_image_cls_dataset(
                 dataset_name=dataset_name,
                 image_root=image_root
             )
+        elif dataset_parser in ["image_qa", "image_t2i", "image_i2t", "image_i2i_vg"]:
+            return SimpleDatasetLoader.load_hf_mmeb_dataset(
+                dataset_name=dataset_name,
+                image_root=image_root,
+                dataset_parser=dataset_parser
+            )
         else:
-            # For other dataset types, try to use the original loaders
-            logger.warning(f"Dataset parser '{dataset_parser}' not fully implemented for API eval. "
-                          f"Falling back to basic loading.")
-            return SimpleDatasetLoader._load_from_original(task_config, data_basedir)
+            raise ValueError(f"Unsupported dataset parser: {dataset_parser}. "
+                           f"Please install required dependencies (flash_attn, etc.) or use a supported parser.")
+
+    @staticmethod
+    def load_hf_mmeb_dataset(dataset_name: str, image_root: str, dataset_parser: str):
+        """Load MMEB dataset from HuggingFace (uses local cache if available)"""
+        try:
+            from datasets import load_dataset
+
+            # Try loading from MMEB test instruct dataset (uses cache if available)
+            try:
+                dataset = load_dataset(
+                    "ziyjiang/MMEB_Test_Instruct",
+                    dataset_name,
+                    split="test",
+                    trust_remote_code=True,
+                )
+            except Exception:
+                # Fallback to other possible sources
+                dataset = load_dataset(
+                    "TIGER-Lab/MMEB",
+                    dataset_name,
+                    split="test",
+                    trust_remote_code=True,
+                )
+
+            queries = []
+            candidates = []
+            gt_infos = []
+            all_cand_set = set()
+
+            for row in dataset:
+                # Build query
+                query_text = ""
+                query_image = None
+
+                if 'qry_inst' in row:
+                    query_text = row['qry_inst'].replace("<|image_1|>", "")
+                if 'qry_text' in row and row['qry_text']:
+                    query_text = query_text + "\n" + row['qry_text'] if query_text else row['qry_text']
+                if 'qry_img_path' in row and row['qry_img_path']:
+                    query_image = os.path.join(image_root, row['qry_img_path'])
+
+                query_text = query_text.strip() + "\n" if query_text else ""
+
+                queries.append({
+                    "text": query_text,
+                    "image_path": query_image
+                })
+
+                # Build ground truth info
+                tgt_texts = row.get('tgt_text', [])
+                if isinstance(tgt_texts, str):
+                    tgt_texts = [tgt_texts]
+
+                gt_infos.append({
+                    "cand_names": tgt_texts,
+                    "label_name": tgt_texts[0] if tgt_texts else ""
+                })
+
+                # Collect all candidates
+                for t in tgt_texts:
+                    if t not in all_cand_set:
+                        all_cand_set.add(t)
+                        # Check if candidate has image
+                        cand_image = None
+                        if 'tgt_img_path' in row:
+                            tgt_img_paths = row['tgt_img_path']
+                            if isinstance(tgt_img_paths, list) and len(tgt_img_paths) > 0:
+                                idx = tgt_texts.index(t) if t in tgt_texts else 0
+                                if idx < len(tgt_img_paths) and tgt_img_paths[idx]:
+                                    cand_image = os.path.join(image_root, tgt_img_paths[idx])
+
+                        candidates.append({
+                            "text": t,
+                            "image_path": cand_image,
+                            "cand_name": t
+                        })
+
+            logger.info(f"Loaded {len(queries)} queries and {len(candidates)} candidates from {dataset_name}")
+            return queries, candidates, gt_infos
+
+        except Exception as e:
+            logger.error(f"Failed to load HF dataset {dataset_name}: {e}")
+            raise
 
     @staticmethod
     def _load_from_original(task_config: dict, data_basedir: str = None):
         """Fallback to original dataset loading mechanism"""
         try:
+            # Try to import without triggering flash_attn dependency
+            import importlib
+            import sys
+
+            # Temporarily suppress flash_attn warnings
+            original_modules = sys.modules.copy()
+
             from src.data.eval_dataset.base_eval_dataset import AutoEvalPairDataset, generate_cand_dataset
             from src.arguments import ModelArguments, DataArguments
 
             # Create minimal args
             model_args = ModelArguments(model_name="placeholder", model_backbone="qwen2_vl")
             data_args = DataArguments(image_resolution="mid")
+
+            # Make a copy of task_config to avoid modifying the original
+            task_config = task_config.copy()
 
             # Update paths
             if data_basedir:
@@ -412,6 +627,10 @@ class SimpleDatasetLoader:
 
             return queries, candidates, gt_infos
 
+        except ImportError as e:
+            logger.error(f"Failed to load dataset using original loader (missing dependency): {e}")
+            logger.error(f"Please install required dependencies or use a supported dataset parser.")
+            raise
         except Exception as e:
             logger.error(f"Failed to load dataset using original loader: {e}")
             raise
@@ -437,36 +656,41 @@ class APIEvaluator:
         is_query: bool,
         desc: str = "Encoding"
     ) -> Tuple[np.ndarray, List[str]]:
-        """Encode a batch of items"""
-        all_embeddings = []
+        """Encode a batch of items using parallel requests"""
+
+        texts = [item.get("text", "") for item in items]
+        image_paths = [item.get("image_path") for item in items]
+
+        # Collect keys
         all_keys = []
+        for item in items:
+            key = item.get("cand_name", item.get("text", str(len(all_keys))))
+            all_keys.append(key)
 
-        batch_size = self.api_config.batch_size
+        # Check if any images exist
+        valid_image_paths = []
+        for p in image_paths:
+            if p and os.path.exists(p):
+                valid_image_paths.append(p)
+            else:
+                valid_image_paths.append(None)
 
-        for i in tqdm(range(0, len(items), batch_size), desc=desc):
-            batch = items[i:i + batch_size]
+        has_images = any(p is not None for p in valid_image_paths)
 
-            texts = [item.get("text", "") for item in batch]
-            image_paths = [item.get("image_path") for item in batch]
+        logger.info(f"{desc}: {len(items)} items with {self.api_config.num_workers} workers, rate limit {self.api_config.rate_limit_qps} QPS")
 
-            # Check if any images exist
-            has_images = any(p and os.path.exists(p) for p in image_paths)
+        # Use parallel requests
+        embeddings = self.client.get_embeddings_parallel(
+            texts=texts,
+            image_paths=valid_image_paths if has_images else None,
+            resolution=self.eval_config.image_resolution,
+            num_workers=self.api_config.num_workers,
+            rate_limit_qps=self.api_config.rate_limit_qps,
+            desc=desc
+        )
 
-            embeddings = self.client.get_embeddings(
-                texts=texts,
-                image_paths=image_paths if has_images else None,
-                is_query=is_query,
-                resolution=self.eval_config.image_resolution
-            )
+        return embeddings, all_keys
 
-            all_embeddings.append(embeddings)
-
-            # Collect keys
-            for item in batch:
-                key = item.get("cand_name", item.get("text", str(len(all_keys))))
-                all_keys.append(key)
-
-        return np.vstack(all_embeddings), all_keys
 
     def evaluate_dataset(self, dataset_name: str, task_config: dict) -> Dict[str, float]:
         """Evaluate a single dataset"""
@@ -539,11 +763,9 @@ class APIEvaluator:
             cand_keys = list(cand_embed_dict.keys())
             cand_embeds = np.stack([cand_embed_dict[key] for key in cand_keys])
 
-            # Normalize for cosine similarity
-            query_embeds_norm = query_embeds / (np.linalg.norm(query_embeds, axis=1, keepdims=True) + 1e-8)
-            cand_embeds_norm = cand_embeds / (np.linalg.norm(cand_embeds, axis=1, keepdims=True) + 1e-8)
-
-            cosine_scores = np.dot(query_embeds_norm, cand_embeds_norm.T)
+            # Compute cosine similarity (embeddings should already be normalized by API)
+            # Original eval.py: cosine_scores = np.dot(qry_embeds, cand_embeds.T)
+            cosine_scores = np.dot(query_embeds, cand_embeds.T)
             ranked_indices = np.argsort(-cosine_scores, axis=1)
 
             for qid, (ranked_idx, gt_info) in enumerate(zip(ranked_indices, gt_infos)):
@@ -556,18 +778,17 @@ class APIEvaluator:
                 })
         else:
             # Local ranking (within candidate subset)
+            # Original eval.py: cand_embeds = np.stack([cand_embed_dict[key] for key in gt_info["cand_names"]])
             for qid, (qry_embed, gt_info) in enumerate(zip(query_embeds, gt_infos)):
                 cand_names = gt_info.get("cand_names", [])
                 if not cand_names:
                     continue
 
-                cand_embeds = np.stack([cand_embed_dict[name] for name in cand_names if name in cand_embed_dict])
+                # Get embeddings for all candidates in order
+                cand_embeds = np.stack([cand_embed_dict[name] for name in cand_names])
 
-                # Normalize
-                qry_embed_norm = qry_embed / (np.linalg.norm(qry_embed) + 1e-8)
-                cand_embeds_norm = cand_embeds / (np.linalg.norm(cand_embeds, axis=1, keepdims=True) + 1e-8)
-
-                cosine_scores = np.dot(qry_embed_norm, cand_embeds_norm.T)
+                # Compute cosine similarity (no normalization, same as original)
+                cosine_scores = np.dot(qry_embed, cand_embeds.T)
                 ranked_idx = np.argsort(-cosine_scores)
 
                 rel_docids = gt_info["label_name"] if isinstance(gt_info["label_name"], list) else [gt_info["label_name"]]
@@ -732,8 +953,10 @@ def parse_args():
                         help="Maximum number of retries for failed requests")
     parser.add_argument("--batch_size", type=int, default=1,
                         help="Batch size for API requests (Ark API processes one at a time)")
-    parser.add_argument("--num_workers", type=int, default=4,
-                        help="Number of parallel workers for API requests")
+    parser.add_argument("--num_workers", type=int, default=8,
+                        help="Number of concurrent workers for parallel requests")
+    parser.add_argument("--rate_limit_qps", type=float, default=50.0,
+                        help="Rate limit: max queries per second (0 for no limit)")
 
     # Evaluation settings
     parser.add_argument("--dataset_config", type=str, default=None,
@@ -751,6 +974,8 @@ def parse_args():
                         help="Image resolution (width height)")
     parser.add_argument("--no_skip_existing", action="store_true",
                         help="Re-evaluate even if scores exist")
+    parser.add_argument("--offline", action="store_true",
+                        help="Force offline mode - use only cached datasets, no network requests")
 
     # Single dataset evaluation
     parser.add_argument("--dataset_name", type=str, default=None,
@@ -761,6 +986,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Set offline mode for HuggingFace datasets if requested
+    if args.offline:
+        import os
+        os.environ["HF_DATASETS_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        logger.info("Offline mode enabled - using only cached datasets")
 
     # Get API key from args or environment variable
     api_key = args.api_key or os.environ.get("ARK_API_KEY", "")
@@ -782,6 +1014,7 @@ def main():
         max_retries=args.max_retries,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        rate_limit_qps=args.rate_limit_qps,
     )
 
     eval_config = EvalConfig(
