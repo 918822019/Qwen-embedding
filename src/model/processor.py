@@ -21,6 +21,9 @@ from src.model.baseline_backbone.internvideo2.modeling_internvideo2 import Inter
 from src.model.vlm_backbone.qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 from src.model.vlm_backbone.qwen2_5_vl_tokenselection import \
     Qwen2_5_VLForConditionalGeneration as Qwen2_5_VL_TokenSelectionForConditionalGeneration
+from src.model.vlm_backbone.qwen3_vl import Qwen3VLForConditionalGeneration
+from src.model.vlm_backbone.qwen3_vl_tokenselection import \
+    Qwen3VLForConditionalGeneration as Qwen3VLTokenSelectionForConditionalGeneration
 
 
 PHI_IMAGE_TOKEN_MAX_INPUT_ID = int(1e9)
@@ -33,6 +36,8 @@ QWEN2_VL_TOKENSELECTION = 'qwen2_vl'
 QWEN2_5_VL = 'qwen2_5_vl'
 QWEN2_VL_TOKENSELECTION = 'qwen2_vl_tokenselection'
 QWEN2_5_VL_TOKENSELECTION = 'qwen2_5_vl_tokenselection'
+QWEN3_VL = 'qwen3_vl'
+QWEN3_VL_TOKENSELECTION = 'qwen3_vl_tokenselection'
 INTERNVIDEO2 = 'internvideo2'
 GME = 'gme'  # QWEN2-VL
 LamRA = 'lamra'  # QWEN2-VL
@@ -47,8 +52,10 @@ MODEL2BACKBONE = {  # keys are from hf_config.model_type or manually added if no
     'qwen2_5_vl': QWEN2_5_VL,
     'qwen2_vl_tokenselection': QWEN2_VL_TOKENSELECTION,
     'qwen2_5_vl_tokenselection': QWEN2_5_VL_TOKENSELECTION,
+    'qwen3_vl': QWEN3_VL,
+    'qwen3_vl_tokenselection': QWEN3_VL_TOKENSELECTION,
     'internvideo2': INTERNVIDEO2,
-    'gme': GME, 
+    'gme': GME,
     'lamra': LamRA,
     'lamra_qwen25': LamRA,
     'colpali': COLPALI,
@@ -63,6 +70,8 @@ VLM_IMAGE_TOKENS = {
     QWEN2_5_VL: "<|image_pad|>",
     QWEN2_VL_TOKENSELECTION: "<|image_pad|>",
     QWEN2_5_VL_TOKENSELECTION: "<|image_pad|>",
+    QWEN3_VL: "<|image_pad|>",
+    QWEN3_VL_TOKENSELECTION: "<|image_pad|>",
     GME: "<|image_pad|>",
     LamRA: "<|image_pad|>",
     LamRA_QWEN2_5: "<|image_pad|>",
@@ -77,6 +86,8 @@ VLM_VIDEO_TOKENS = {
     QWEN2_5_VL: "<|video_pad|>",
     QWEN2_VL_TOKENSELECTION: "<|video_pad|>",
     QWEN2_5_VL_TOKENSELECTION: "<|video_pad|>",
+    QWEN3_VL: "<|video_pad|>",
+    QWEN3_VL_TOKENSELECTION: "<|video_pad|>",
     GME: "<|video_pad|>",
     LamRA: "<|video_pad|>",
     LamRA_QWEN2_5: "<|video_pad|>",
@@ -92,6 +103,8 @@ backbone2model = {
     QWEN2_5_VL: Qwen2_5_VLForConditionalGeneration,
     QWEN2_VL_TOKENSELECTION: Qwen2VLTokenSelectionForConditionalGeneration,
     QWEN2_5_VL_TOKENSELECTION: Qwen2_5_VL_TokenSelectionForConditionalGeneration,
+    QWEN3_VL: Qwen3VLForConditionalGeneration,
+    QWEN3_VL_TOKENSELECTION: Qwen3VLTokenSelectionForConditionalGeneration,
     INTERNVIDEO2: InternVideo2_Stage2,
     E5_V: LlavaNextForConditionalGeneration,
 }
@@ -176,6 +189,45 @@ def load_processor(model_args, data_args=None):
             image_processor=image_processor, tokenizer=tokenizer,
             uigraph_use=model_args.uigraph_use,
             uigraph_diff=model_args.uigraph_diff,  uigraph_rand=model_args.uigraph_rand,
+            uimask_ratio=model_args.uimask_ratio, uimask_rand=model_args.uimask_rand
+        )
+    elif model_args.model_backbone == QWEN3_VL:
+        from src.model.vlm_backbone.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
+        from src.model.vlm_backbone.qwen2_5_vl.image_processing_qwen2_5_vl import Qwen2_5_VLImageProcessor
+        from src.model.vlm_backbone.qwen3_vl.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+        from transformers import AutoTokenizer
+        min_pixels, max_pixels = None, None
+        if data_args is not None:
+            min_pixels, max_pixels = data_args.resize_min_pixels, data_args.resize_max_pixels
+        size = {"shortest_edge": min_pixels, "longest_edge": max_pixels, "min_pixels": min_pixels, "max_pixels": max_pixels}
+        image_processor = Qwen2_5_VLImageProcessor.from_pretrained(model_name_or_path, size=size)
+        video_processor = Qwen3VLVideoProcessor.from_pretrained(model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        processor = Qwen3VLProcessor.from_pretrained(
+            model_name_or_path,
+            image_processor=image_processor,
+            tokenizer=tokenizer,
+            video_processor=video_processor
+        )
+    elif model_args.model_backbone == QWEN3_VL_TOKENSELECTION:
+        from src.model.vlm_backbone.qwen3_vl_tokenselection.processing_qwen3_vl import Qwen3VLProcessor
+        from src.model.vlm_backbone.qwen2_5_vl.image_processing_qwen2_5_vl import Qwen2_5_VLImageProcessor
+        from src.model.vlm_backbone.qwen3_vl_tokenselection.video_processing_qwen3_vl import Qwen3VLVideoProcessor
+        from transformers import AutoTokenizer
+        min_pixels, max_pixels = None, None
+        if data_args is not None:
+            min_pixels, max_pixels = data_args.resize_min_pixels, data_args.resize_max_pixels
+        size = {"shortest_edge": min_pixels, "longest_edge": max_pixels, "min_pixels": min_pixels, "max_pixels": max_pixels}
+        image_processor = Qwen2_5_VLImageProcessor.from_pretrained(model_name_or_path, size=size)
+        video_processor = Qwen3VLVideoProcessor.from_pretrained(model_name_or_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        processor = Qwen3VLProcessor.from_pretrained(
+            model_name_or_path,
+            image_processor=image_processor,
+            tokenizer=tokenizer,
+            video_processor=video_processor,
+            uigraph_use=model_args.uigraph_use,
+            uigraph_diff=model_args.uigraph_diff, uigraph_rand=model_args.uigraph_rand,
             uimask_ratio=model_args.uimask_ratio, uimask_rand=model_args.uimask_rand
         )
     elif model_args.model_backbone == INTERNVIDEO2:
@@ -470,6 +522,148 @@ def Qwen2_VL_TokenSelection_process_fn(model_inputs: dict, processor: Qwen2VLTok
     return inputs
 
 
+def Qwen3_VL_process_fn(model_inputs: dict, processor, max_length=None):
+    """Process function for Qwen3-VL, similar to Qwen2-VL but uses QWEN3_VL tokens."""
+    input_ids, pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw = [], [], [], [], []
+    texts, visual_inputs = model_inputs['text'], model_inputs['images']
+    vlm_image_token, vlm_video_token = VLM_IMAGE_TOKENS[QWEN3_VL], VLM_VIDEO_TOKENS[QWEN3_VL]
+
+    for text, images in zip(texts, visual_inputs):
+        if images is None or (type(images)==list and any(i is None for i in images)):
+            inputs = processor(text=[text], images=None, return_tensors="np", max_length=max_length, truncation=True)
+            input_id = inputs["input_ids"].squeeze().tolist()
+            if isinstance(input_id, int):
+                input_id = [input_id]
+            input_ids.append(input_id)
+            pixel_values.append(None)
+            image_grid_thw.append(None)
+            pixel_values_videos.append(None)
+            video_grid_thw.append(None)
+        else:
+            try:
+                if vlm_image_token in text:
+                    if isinstance(images, PIL.Image.Image):
+                        images = [images]
+                    for iid, image in enumerate(images):
+                        if image.size[0] < 28 or image.size[1] < 28:
+                            image = image.resize((56, 56))
+                            images[iid] = image
+                    inputs = processor(text=[text], images=images, return_tensors="np", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
+                elif vlm_video_token in text:
+                    inputs = processor(text=[text], videos=[images], return_tensors="np", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
+                else:
+                    raise NotImplementedError(f"No visual token found ({vlm_image_token} or {vlm_video_token}) in the text: {text}")
+            except Exception as e:
+                for i in images:
+                    print(i.filename)
+                raise e
+            input_ids.append(inputs["input_ids"].squeeze().tolist())
+            if 'pixel_values' in inputs:
+                pixel_values.append(inputs['pixel_values'])
+                image_grid_thw.append(inputs['image_grid_thw'])
+                pixel_values_videos.append(None)
+                video_grid_thw.append(None)
+            else:
+                pixel_values.append(None)
+                image_grid_thw.append(None)
+                pixel_values_videos.append(inputs['pixel_values_videos'])
+                video_grid_thw.append(inputs['video_grid_thw'])
+
+    batch_encoding = processor.tokenizer.pad({'input_ids': input_ids}, return_tensors="pt")
+    input_ids, attention_mask = batch_encoding['input_ids'], batch_encoding['attention_mask']
+    inputs = {
+        'input_ids': input_ids.long(),
+        'attention_mask': attention_mask.long(),
+        'texts': texts,
+        'images': visual_inputs,
+    }
+    inputs['pixel_values'] = pixel_values
+    inputs['image_grid_thw'] = image_grid_thw
+    inputs['pixel_values_videos'] = pixel_values_videos
+    inputs['video_grid_thw'] = video_grid_thw
+
+    return inputs
+
+
+def Qwen3_VL_TokenSelection_process_fn(model_inputs: dict, processor, max_length=None):
+    """Process function for Qwen3-VL with token selection."""
+    input_ids, pixel_values, image_grid_thw, pixel_values_videos, video_grid_thw = [], [], [], [], []
+    patch_pos, select_mask = [], []
+    texts, visual_inputs = model_inputs['text'], model_inputs['images']
+    image_exists = False
+    vlm_image_token, vlm_video_token = VLM_IMAGE_TOKENS[QWEN3_VL_TOKENSELECTION], VLM_VIDEO_TOKENS[QWEN3_VL_TOKENSELECTION]
+
+    for text, images in zip(texts, visual_inputs):
+        if images is None or (type(images)==list and any(i is None for i in images)):
+            inputs = processor(text=[text], images=None, return_tensors="np", max_length=max_length, truncation=True)
+            input_id = inputs["input_ids"].squeeze().tolist()
+            if isinstance(input_id, int):
+                input_id = [input_id]
+            input_ids.append(input_id)
+            pixel_values.append(None)
+            image_grid_thw.append(None)
+            patch_pos.append(None)
+            select_mask.append(None)
+            pixel_values_videos.append(None)
+            video_grid_thw.append(None)
+        else:
+            image_exists = True
+            if vlm_image_token in text:
+                inputs = processor(text=[text], images=[images], return_tensors="np", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
+            elif vlm_video_token in text:
+                assert len(images) > 1, f"Video data must have more than 1 frame, got {len(images)}"
+                inputs = processor(text=[text], videos=[images], return_tensors="np", max_length=None, truncation=False, input_data_format=ChannelDimension.LAST)
+            else:
+                raise NotImplementedError(f"Unsupported visual token in text: {text}")
+            input_ids.append(inputs["input_ids"].squeeze().tolist())
+            if 'pixel_values' in inputs:
+                pixel_values.append(inputs['pixel_values'])
+                image_grid_thw.append(inputs['image_grid_thw'])
+                pixel_values_videos.append(None)
+                video_grid_thw.append(None)
+                if 'patch_pos' in inputs:
+                    patch_pos.append(inputs['patch_pos'])
+                if 'select_mask' in inputs:
+                    select_mask.append(inputs['select_mask'])
+            else:
+                pixel_values.append(None)
+                image_grid_thw.append(None)
+                patch_pos.append(None)
+                select_mask.append(None)
+                pixel_values_videos.append(inputs['pixel_values_videos'])
+                video_grid_thw.append(inputs['video_grid_thw'])
+
+    batch_encoding = processor.tokenizer.pad({'input_ids': input_ids}, return_tensors="pt")
+    input_ids, attention_mask = batch_encoding['input_ids'], batch_encoding['attention_mask']
+
+    if image_exists:
+        if patch_pos:
+            patch_pos_shape_for_padding = list(v.shape for v in patch_pos if v is not None)[0]
+            key_tmp = [torch.from_numpy(v) if v is not None else (torch.zeros(patch_pos_shape_for_padding) - 1) for v in patch_pos]
+            max_length = input_ids.size(1)
+            padded_key = [torch.nn.functional.pad(pos, (0, max_length - pos.size(1)), value=-1) for pos in key_tmp]
+            patch_pos = torch.cat(padded_key, dim=0)
+        if select_mask:
+            select_mask_shape_for_padding = list(v.shape for v in select_mask if v is not None)[0]
+            key_tmp = [torch.from_numpy(v) if v is not None else torch.ones(select_mask_shape_for_padding).bool() for v in select_mask]
+            max_length = input_ids.size(1)
+            padded_key = [torch.nn.functional.pad(pos, (0, max_length - pos.size(1)), value=True) for pos in key_tmp]
+            select_mask = torch.cat(padded_key, dim=0)
+
+    inputs = {
+        'input_ids': input_ids.long(),
+        'attention_mask': attention_mask.long()
+    }
+    inputs['pixel_values'] = pixel_values
+    inputs['image_grid_thw'] = image_grid_thw
+    inputs['pixel_values_videos'] = pixel_values_videos
+    inputs['video_grid_thw'] = video_grid_thw
+    inputs['patch_pos'] = patch_pos
+    inputs['select_mask'] = select_mask
+
+    return inputs
+
+
 def InternVL_process_fn(model_inputs: dict, processor, max_length=None):
     # TODO not working yet
     input_ids, pixel_values, image_sizes, image_grid_thw = [], [], [], []
@@ -681,6 +875,8 @@ process_vlm_inputs_fns = {
     QWEN2_5_VL: Qwen2_VL_process_fn,
     QWEN2_VL_TOKENSELECTION: Qwen2_VL_TokenSelection_process_fn,
     QWEN2_5_VL_TOKENSELECTION: Qwen2_VL_TokenSelection_process_fn,
+    QWEN3_VL: Qwen3_VL_process_fn,
+    QWEN3_VL_TOKENSELECTION: Qwen3_VL_TokenSelection_process_fn,
     INTERNVIDEO2: InternVideo2_process_fn,
     GME: Gme_process_fn,
     LamRA: Gme_process_fn,

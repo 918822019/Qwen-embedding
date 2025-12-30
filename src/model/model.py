@@ -7,7 +7,7 @@ from peft import LoraConfig, get_peft_model, PeftModel
 from src.model.processor import QWEN2_5_VL_TOKENSELECTION
 from src.arguments import ModelArguments, TrainingArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, \
-    backbone2model, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, E5_V
+    backbone2model, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL, QWEN3_VL_TOKENSELECTION, E5_V
 
 from src.arguments import ModelArguments
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, PHI3V, get_backbone_name, print_master, QWEN2_5_VL, INTERNVIDEO2, \
@@ -146,7 +146,7 @@ class MMEBModel(nn.Module):
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
             )
-        elif model_backbone in [QWEN2_VL, QWEN2_5_VL]:
+        elif model_backbone in [QWEN2_VL, QWEN2_5_VL, QWEN3_VL]:
             config._attn_implementation = "flash_attention_2"
             config.padding_side = "left"
             config.use_cache = False
@@ -156,7 +156,7 @@ class MMEBModel(nn.Module):
                 torch_dtype=torch.bfloat16,
                 low_cpu_mem_usage=True,
             )
-        elif model_backbone in [QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION]:
+        elif model_backbone in [QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL_TOKENSELECTION]:
             config._attn_implementation = "flash_attention_2"
             config.padding_side = "left"
             config.use_cache = False
@@ -220,7 +220,7 @@ class MMEBModel(nn.Module):
             model_backbone = get_backbone_name(hf_config=config, model_type=model_args.model_type)
             setattr(model_args, 'model_backbone', model_backbone)
         print_master(f'Loading backbone [{model_args.model_backbone}] from {model_name_or_path}')
-        if model_args.model_backbone in {LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, E5_V}:
+        if model_args.model_backbone in {LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL, QWEN3_VL_TOKENSELECTION, E5_V}:
             config = AutoConfig.from_pretrained(model_args.model_name, trust_remote_code=True)
             config._attn_implementation = "flash_attention_2"
             config.vision_config._attn_implementation = "flash_attention_2"

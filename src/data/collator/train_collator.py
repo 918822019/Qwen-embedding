@@ -10,7 +10,7 @@ import torch
 from qwen_vl_utils import smart_resize
 
 from src.model.processor import LLAVA_NEXT, QWEN2_VL, QWEN2_5_VL, \
-    QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, PHI3V, process_vlm_inputs_fns
+    QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL, QWEN3_VL_TOKENSELECTION, PHI3V, process_vlm_inputs_fns
 from PIL import Image
 import io
 from src.utils.basic_utils import print_rank, print_master
@@ -161,7 +161,7 @@ class MultimodalDataCollator:
                             image = image.resize(image_resolution)
                         if image is not None and (self.data_args.image_decay_factor is not None and image_resolution is None):
                             assert image_resolution is None, "image_resolution is conflicting with image_decay_factor"
-                            assert self.model_args.model_backbone in [QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION], "image_decay_factor is only supported for Qwen models"
+                            assert self.model_args.model_backbone in [QWEN2_VL, QWEN2_5_VL, QWEN2_VL_TOKENSELECTION, QWEN2_5_VL_TOKENSELECTION, QWEN3_VL, QWEN3_VL_TOKENSELECTION], "image_decay_factor is only supported for Qwen models"
                             # TODO: this is a hacky way to decay image resolution, need to be refactored
                             max_pixels = max(self.data_args.resize_min_pixels, self.data_args.resize_max_pixels * self.data_args.image_decay_factor ** (num_images - image_idx))
                             width, height = image.size
